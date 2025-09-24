@@ -107,9 +107,9 @@ class AseCalculation(engine.CalcJob):
             if optimizer_name is None:
                 raise common.InputValidationError("Don't have access to the optimizer name")
 
-            # prepare the arguments to be passed to the optimizer class
-            optimizer_argsstr = f"atoms, logfile='{self.inputs.metadata.options.optimizer_stdout}', "\
-                     + convert_the_args(optimizer.pop('args', []))
+            # # prepare the arguments to be passed to the optimizer class
+            # optimizer_argsstr = f"atoms, logfile='{self.inputs.metadata.options.optimizer_stdout}', "\
+            #          + convert_the_args(optimizer.pop('args', []))
 
             # prepare the arguments to be passed to optimizer.run()
             optimizer_runargsstr = convert_the_args(optimizer.pop('run_args', []))
@@ -193,8 +193,43 @@ class AseCalculation(engine.CalcJob):
 
         all_imports = ['import ase', 'import ase.io', 'import json', 'import numpy', calculator_import_string]
 
+        setup_flag=False  # Flag to indicate if setup code is added
+
         if optimizer is not None:
             all_imports.append(optimizer_import_string)
+
+            # 最適化の対象となるオブジェクト名（デフォルトは'atoms'）
+            optimizable_object_name = 'atoms'
+            # ==================== add Fixsymmetry and FrechetCellFilter =======================================================
+
+            if 'setup' in optimizer:
+                if not isinstance(optimizer['setup'], dict):
+                    raise common.InputValidationError('setup key must contain a dictionary')
+                setup = optimizer.pop('setup', None)
+
+                # これから生成するスクリプト行を保存するリスト
+                setup_script_lines = []
+                setup_flag=True
+
+
+                if setup.get('FixSymmetry', False):
+                    # 必要なimport文を後で追加するように準備
+                    all_imports.append(f'from ase.constraints import FixSymmetry')
+                    # 実際に制約をセットするスクリプト行を準備
+                    setup_script_lines.append(f'atoms.set_constraint(FixSymmetry(atoms))')
+
+                if setup.get('FrechetCellFilter', False):
+                    all_imports.append('from ase.filters import FrechetCellFilter')
+                    setup_script_lines.append('cell_filter = FrechetCellFilter(atoms)')
+                    # 最適化の対象を'atoms'から'cell_filter'に変更
+                    optimizable_object_name = 'cell_filter'
+
+                # prepare the arguments to be passed to the optimizer class
+            optimizer_argsstr = f"{optimizable_object_name}, logfile='{self.inputs.metadata.options.optimizer_stdout}', "\
+                    + convert_the_args(optimizer.pop('args', []))
+
+            # =================================================================================================================
+
 
         try:
             if 'PW' in calc_args['mode'].values():
@@ -237,6 +272,20 @@ class AseCalculation(engine.CalcJob):
             input_txt += '\n'.join(pre_lines) + '\n\n'
 
         input_txt += f"atoms = ase.io.read('{self._input_aseatoms}')\n"
+
+
+        # ==================== add Fixsymmetry and FrechetCellFilter =======================================================
+
+        # === ここに追加 =======================================================
+        # ステップ1で準備したセットアップ用のコードを挿入
+        if setup_flag:
+            if setup_script_lines:
+                input_txt += '\n'.join(setup_script_lines) + '\n'
+        # === ここまで追加 =======================================================
+
+        # =================================================================================================================
+
+
         input_txt += '\n'
         input_txt += f'calculator = custom_calculator({calc_argsstr})\n'
         input_txt += 'atoms.calc = calculator\n'
